@@ -5,16 +5,19 @@ const issuer = 'https://token.actions.githubusercontent.com';
 const ref = 'refs/heads/code78-oidc-probe';
 const require = (condition, label) => { if (!condition) throw Error(label); };
 
-export function expectedIdentity(workload, repository, repositoryId) {
+export function expectedIdentity(workload, repository, repositoryId, ownerId) {
   require(['api', 'worker'].includes(workload), 'WORKLOAD');
   require(/^[1-9]\d*$/.test(repositoryId), 'REPOSITORY_ID');
+  require(/^[1-9]\d*$/.test(ownerId), 'OWNER_ID');
   require(/^[\w.-]+\/[\w.-]+$/.test(repository), 'REPOSITORY');
+  const [owner, repo] = repository.split('/');
+  const prefix = 'repo:' + owner + '@' + ownerId + '/' + repo + '@' + repositoryId;
   const environment = 'code78-cos-' + workload + '-probe';
   const workflow = repository + '/.github/workflows/' + workload + '.yml@' + ref;
   const event = 'workflow_dispatch';
-  return { repository, repositoryId, environment, workflow, event, ref, issuer,
+  return { repository, repositoryId, ownerId, environment, workflow, event, ref, issuer,
     audience: 'urn:hnm:code78:cos:' + workload,
-    subject: ['repository_id', repositoryId, 'environment', environment, 'ref', ref,
+    subject: [prefix, 'repository_id', repositoryId, 'environment', environment, 'ref', ref,
       'event_name', event, 'workflow_ref', workflow].join(':') };
 }
 
@@ -28,14 +31,14 @@ export function verifyIdentity(token, jwks, expected, now) {
   require(verify('RSA-SHA256', Buffer.from(header + '.' + payload), createPublicKey({ key: matches[0], format: 'jwk' }), Buffer.from(signature, 'base64url')), 'SIGNATURE');
   const p = JSON.parse(Buffer.from(payload, 'base64url'));
   require(p.iss === expected.issuer && p.aud === expected.audience && p.sub === expected.subject, 'IDENTITY');
-  require(p.repository === expected.repository && p.repository_id === expected.repositoryId && p.repository_visibility === 'public', 'REPOSITORY');
+  require(p.repository === expected.repository && p.repository_id === expected.repositoryId && p.repository_owner_id === expected.ownerId && p.repository_visibility === 'public', 'REPOSITORY');
   require(p.environment === expected.environment && p.ref === expected.ref && p.event_name === expected.event && p.workflow_ref === expected.workflow, 'WORKFLOW');
   require([p.iat,p.nbf,p.exp].every(Number.isSafeInteger) && p.iat <= now + 30 && p.nbf <= now + 30 && now < p.exp && p.exp > p.iat && p.exp - p.iat <= 600, 'LIFETIME');
   return { issuer: p.iss, audience: p.aud, subject: p.sub, expiry: p.exp, keyId: h.kid };
 }
 
 async function main() {
-  const identity = expectedIdentity(process.argv[2], process.env.PROBE_REPOSITORY, process.env.PROBE_REPOSITORY_ID);
+  const identity = expectedIdentity(process.argv[2], process.env.PROBE_REPOSITORY, process.env.PROBE_REPOSITORY_ID, process.env.PROBE_OWNER_ID);
   const request = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
   const issuerHost = new URL(issuer).hostname;
   const trustedHost = request.hostname === issuerHost || request.hostname.endsWith('.' + issuerHost);
